@@ -14,6 +14,7 @@ dependencies = [
 [project.scripts]
 chemanim = "chemanim.cli:main"
 chemanim-mcp = "chemanim.mcp_server:main"
+chemanim-probe = "chemanim.probe_server:main"
 
 [build-system]
 requires = ["hatchling"]
