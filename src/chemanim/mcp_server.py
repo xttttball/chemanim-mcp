@@ -18,6 +18,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 BUILD_DIR = PROJECT_ROOT / "build"
 MEDIA_DIR = PROJECT_ROOT / "media"
 RUN_LOCK = Lock()
+BUILD_ID = "xttttball-upload-v1"
 
 mcp = MCPServer(
     "ChemAnim",
@@ -35,6 +36,16 @@ class GenerationResult(TypedDict):
     video_file: str | None
     video_url: str | None
     log: str
+
+
+class RuntimeDiagnostic(TypedDict):
+    build_id: str
+    upload_url_configured: bool
+    upload_token_configured: bool
+    health_url: str | None
+    upload_server_status: int | None
+    upload_server_ok: bool
+    upload_server_error: str | None
 
 
 def build_command(
@@ -145,6 +156,57 @@ def upload_video(video_file: str) -> str | None:
         raise RuntimeError(f"Upload server did not return video_url: {payload}")
 
     return video_url.strip()
+
+
+@mcp.tool()
+def diagnose_runtime() -> RuntimeDiagnostic:
+    """Report runtime build identity, upload env presence, and upload server reachability."""
+    upload_url = os.environ.get("CHEMANIM_UPLOAD_URL", "").strip()
+    upload_token = os.environ.get("CHEMANIM_UPLOAD_TOKEN", "").strip()
+
+    if not upload_url:
+        return {
+            "build_id": BUILD_ID,
+            "upload_url_configured": False,
+            "upload_token_configured": bool(upload_token),
+            "health_url": None,
+            "upload_server_status": None,
+            "upload_server_ok": False,
+            "upload_server_error": "CHEMANIM_UPLOAD_URL is not configured",
+        }
+
+    health_url = upload_url.rsplit("/", 1)[0] + "/health"
+    request = Request(
+        health_url,
+        method="GET",
+        headers={"Accept": "application/json", "User-Agent": "ChemAnim-Diagnostics/1.0"},
+    )
+
+    status: int | None = None
+    error: str | None = None
+    ok = False
+
+    try:
+        with urlopen(request, timeout=10) as response:
+            status = response.status
+            ok = 200 <= status < 300
+    except HTTPError as exc:
+        status = exc.code
+        error = f"HTTP {exc.code}"
+    except URLError as exc:
+        error = str(exc.reason)
+    except Exception as exc:  # defensive: diagnostics should report, not crash
+        error = str(exc)
+
+    return {
+        "build_id": BUILD_ID,
+        "upload_url_configured": True,
+        "upload_token_configured": bool(upload_token),
+        "health_url": health_url,
+        "upload_server_status": status,
+        "upload_server_ok": ok,
+        "upload_server_error": error,
+    }
 
 
 @mcp.tool()
