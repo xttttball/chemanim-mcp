@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 import subprocess
 import sys
 from threading import Lock
 from typing import Literal, TypedDict
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
+from uuid import uuid4
 
 from mcp.server import MCPServer
 
@@ -29,6 +33,7 @@ class GenerationResult(TypedDict):
     scene_file: str
     verification_file: str
     video_file: str | None
+    video_url: str | None
     log: str
 
 
@@ -68,6 +73,78 @@ def latest_video() -> str | None:
         if "partial_movie_files" not in path.parts
     ]
     return str(max(videos, key=lambda path: path.stat().st_mtime).resolve()) if videos else None
+
+
+def upload_video(video_file: str) -> str | None:
+    """Upload a rendered MP4 and return its public URL.
+
+    Uploading is optional. If CHEMANIM_UPLOAD_URL is not configured, the
+    original local-only behaviour is preserved and ``None`` is returned.
+    """
+    upload_url = os.environ.get("CHEMANIM_UPLOAD_URL", "").strip()
+    upload_token = os.environ.get("CHEMANIM_UPLOAD_TOKEN", "").strip()
+
+    if not upload_url:
+        return None
+    if not upload_token:
+        raise RuntimeError(
+            "CHEMANIM_UPLOAD_URL is configured but CHEMANIM_UPLOAD_TOKEN is missing"
+        )
+
+    video_path = Path(video_file)
+    if not video_path.is_file():
+        raise RuntimeError(f"Rendered video does not exist: {video_path}")
+
+    boundary = f"----ChemAnimBoundary{uuid4().hex}"
+    filename = video_path.name
+    file_data = video_path.read_bytes()
+
+    body = bytearray()
+    body.extend(f"--{boundary}\r\n".encode("utf-8"))
+    body.extend(
+        (
+            f'Content-Disposition: form-data; name="file"; filename="{filename}"\r\n'
+        ).encode("utf-8")
+    )
+    body.extend(b"Content-Type: video/mp4\r\n\r\n")
+    body.extend(file_data)
+    body.extend(b"\r\n")
+    body.extend(f"--{boundary}--\r\n".encode("utf-8"))
+
+    request = Request(
+        upload_url,
+        data=bytes(body),
+        method="POST",
+        headers={
+            "Authorization": f"Bearer {upload_token}",
+            "Content-Type": f"multipart/form-data; boundary={boundary}",
+            "Accept": "application/json",
+        },
+    )
+
+    try:
+        with urlopen(request, timeout=120) as response:
+            raw_response = response.read().decode("utf-8")
+    except HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(
+            f"Video upload failed with HTTP {exc.code}: {detail}"
+        ) from exc
+    except URLError as exc:
+        raise RuntimeError(f"Video upload failed: {exc.reason}") from exc
+
+    try:
+        payload = json.loads(raw_response)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(
+            f"Upload server returned invalid JSON: {raw_response[:500]}"
+        ) from exc
+
+    video_url = payload.get("video_url")
+    if not isinstance(video_url, str) or not video_url.strip():
+        raise RuntimeError(f"Upload server did not return video_url: {payload}")
+
+    return video_url.strip()
 
 
 @mcp.tool()
@@ -113,11 +190,15 @@ def generate_chemistry_animation(
 
     scene_file = BUILD_DIR / "scene.json"
     verification_file = BUILD_DIR / "verification.json"
+    video_file = latest_video() if render else None
+    video_url = upload_video(video_file) if video_file else None
+
     return {
         "status": "rendered" if render else "validated",
         "scene_file": str(scene_file.resolve()),
         "verification_file": str(verification_file.resolve()),
-        "video_file": latest_video() if render else None,
+        "video_file": video_file,
+        "video_url": video_url,
         "log": log,
     }
 
