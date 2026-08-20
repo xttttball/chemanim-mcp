@@ -1,10 +1,10 @@
 [project]
 name = "chemanim-probe"
-version = "0.1.0"
-description = "Minimal MCP probe for hosted tool discovery testing"
-requires-python = ">=3.12,<3.14"
+version = "0.2.0"
+description = "Minimal MCP 1.5 probe for iFlytek hosted tool discovery testing"
+requires-python = ">=3.11"
 dependencies = [
-    "mcp>=2,<3",
+    "mcp==1.5.0",
 ]
 
 [project.scripts]
